@@ -45,7 +45,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download latest upstream release
+      - name: Download locked upstream release
         id: upstream
         env:
           GH_TOKEN: ${{ github.token }}
@@ -56,6 +56,7 @@ jobs:
           release_json="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest")"
           tag="$(jq -r '.tag_name // empty' <<<"$release_json")"
           version="${tag#v}"
+          source_date_epoch="$(jq -r '.published_at | fromdateiso8601' <<<"$release_json")"
 
           if [[ -z "$tag" || "$version" == *-* || ! "$version" =~ ^[0-9][0-9A-Za-z._+]*$ || ( "$tag" != "$version" && "$tag" != "v$version" ) ]]; then
             printf 'Unsupported upstream release tag: %s\n' "$tag" >&2
@@ -64,23 +65,117 @@ jobs:
 
           published_version="$(npm view "${NPM_PACKAGE}@${version}" version)"
           tarball_url="$(npm view "${NPM_PACKAGE}@${version}" dist.tarball)"
-          if [[ "$published_version" != "$version" || -z "$tarball_url" ]]; then
-            printf 'npm package %s@%s is not available\n' "$NPM_PACKAGE" "$version" >&2
+          npm_integrity="$(npm view "${NPM_PACKAGE}@${version}" dist.integrity)"
+          if [[ "$published_version" != "$version" || -z "$tarball_url" || "$npm_integrity" != sha512-* ]]; then
+            printf 'npm package %s@%s is not available or lacks SHA-512 integrity\n' \
+              "$NPM_PACKAGE" "$version" >&2
             exit 1
           fi
 
-          archive="$PACKAGE_NAME-$version.tgz"
-          curl --fail --location --retry 3 --output "$archive" "$tarball_url"
-          archive_sha256="$(sha256sum "$archive" | cut -d ' ' -f 1)"
+          download_dir="$RUNNER_TEMP/ompweb-upstream"
+          rm -rf "$download_dir"
+          mkdir -p "$download_dir"
+          npm_archive="$download_dir/$PACKAGE_NAME-$version.tgz"
+          lockfile="$download_dir/package-lock.json"
 
+          curl --fail --location --retry 3 --output "$npm_archive" "$tarball_url"
+          expected_integrity="${npm_integrity#sha512-}"
+          actual_integrity="$(openssl dgst -sha512 -binary "$npm_archive" | base64 -w 0)"
+          if [[ "$actual_integrity" != "$expected_integrity" ]]; then
+            printf 'npm archive integrity mismatch for %s@%s\n' \
+              "$NPM_PACKAGE" "$version" >&2
+            exit 1
+          fi
+
+          gh api \
+            --method GET \
+            -H 'Accept: application/vnd.github.raw+json' \
+            "repos/${UPSTREAM_REPOSITORY}/contents/package-lock.json" \
+            -f "ref=$tag" \
+            >"$lockfile"
+
+          npm_sha256="$(sha256sum "$npm_archive" | cut -d ' ' -f 1)"
+          lockfile_sha256="$(sha256sum "$lockfile" | cut -d ' ' -f 1)"
           {
             printf 'version=%s\n' "$version"
-            printf 'archive_sha256=%s\n' "$archive_sha256"
+            printf 'tag=%s\n' "$tag"
+            printf 'source_date_epoch=%s\n' "$source_date_epoch"
+            printf 'npm_archive=%s\n' "$npm_archive"
+            printf 'npm_sha256=%s\n' "$npm_sha256"
+            printf 'lockfile=%s\n' "$lockfile"
+            printf 'lockfile_sha256=%s\n' "$lockfile_sha256"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Build locked runtime bundle
+        id: bundle
+        env:
+          LOCKFILE: ${{ steps.upstream.outputs.lockfile }}
+          NPM_ARCHIVE: ${{ steps.upstream.outputs.npm_archive }}
+          SOURCE_DATE_EPOCH: ${{ steps.upstream.outputs.source_date_epoch }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          bundle_root="$RUNNER_TEMP/ompweb-bundle"
+          npm_cache="$RUNNER_TEMP/ompweb-npm-cache"
+          rm -rf "$bundle_root" "$npm_cache"
+          mkdir -p "$bundle_root/ompweb" "$npm_cache"
+
+          tar --extract \
+            --gzip \
+            --file "$NPM_ARCHIVE" \
+            --strip-components 1 \
+            --directory "$bundle_root/ompweb"
+          cp "$LOCKFILE" "$bundle_root/ompweb/package-lock.json"
+
+          test "$(uname -m)" = x86_64
+          [[ "$(getconf GNU_LIBC_VERSION)" == glibc* ]]
+          npm ci \
+            --prefix "$bundle_root/ompweb" \
+            --cache "$npm_cache" \
+            --omit=dev \
+            --ignore-scripts
+
+          node -e '
+            const manifest = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            if (manifest.version !== process.argv[2]) process.exit(1);
+          ' "$bundle_root/ompweb/package.json" "$VERSION"
+
+          bundle_name="$PACKAGE_NAME-$VERSION-x86_64.tar.gz"
+          bundle_path="$GITHUB_WORKSPACE/$bundle_name"
+          verification_path="$RUNNER_TEMP/$bundle_name"
+
+          create_bundle() {
+            local output=$1
+            tar \
+              --sort=name \
+              --mtime="@$SOURCE_DATE_EPOCH" \
+              --owner=0 \
+              --group=0 \
+              --numeric-owner \
+              --format=gnu \
+              --directory "$bundle_root" \
+              --create \
+              --file - \
+              ompweb \
+              | gzip -n -9 >"$output"
+          }
+
+          create_bundle "$bundle_path"
+          create_bundle "$verification_path"
+          cmp --silent "$bundle_path" "$verification_path"
+
+          bundle_sha256="$(sha256sum "$bundle_path" | cut -d ' ' -f 1)"
+          {
+            printf 'name=%s\n' "$bundle_name"
+            printf 'path=%s\n' "$bundle_path"
+            printf 'sha256=%s\n' "$bundle_sha256"
+            printf 'tag=bundle-v%s-%s\n' "$VERSION" "$bundle_sha256"
           } >>"$GITHUB_OUTPUT"
 
       - name: Update package recipe
         env:
-          ARCHIVE_SHA256: ${{ steps.upstream.outputs.archive_sha256 }}
+          BUNDLE_SHA256: ${{ steps.bundle.outputs.sha256 }}
           VERSION: ${{ steps.upstream.outputs.version }}
         run: |
           python3 <<'PY'
@@ -91,7 +186,7 @@ jobs:
           path = Path("PKGBUILD")
           text = path.read_text()
           version = os.environ["VERSION"]
-          new_checksum = os.environ["ARCHIVE_SHA256"]
+          new_checksum = os.environ["BUNDLE_SHA256"]
 
           def require_match(pattern):
               match = re.search(pattern, text, flags=re.MULTILINE)
@@ -101,19 +196,13 @@ jobs:
 
           current_version = require_match(r"^pkgver=(.+)$").group(1)
           current_pkgrel = int(require_match(r"^pkgrel=([0-9]+)$").group(1))
-          current_checksums = re.findall(
-              r"^sha256sums=\('([0-9a-f]{64})'\)$",
-              text,
-              flags=re.MULTILINE,
-          )
-          if len(current_checksums) != 1:
-              raise SystemExit(
-                  f"Expected one SHA-256 entry, found {len(current_checksums)}"
-              )
+          current_checksum = require_match(
+              r"^_bundle_sha256='([0-9a-f]{64})'$"
+          ).group(1)
 
           if current_version != version:
               pkgrel = 1
-          elif current_checksums[0] != new_checksum:
+          elif current_checksum != new_checksum:
               pkgrel = current_pkgrel + 1
           else:
               pkgrel = current_pkgrel
@@ -122,8 +211,8 @@ jobs:
               (r"^pkgver=.*$", f"pkgver={version}"),
               (r"^pkgrel=.*$", f"pkgrel={pkgrel}"),
               (
-                  r"^sha256sums=\('[0-9a-f]{64}'\)$",
-                  f"sha256sums=('{new_checksum}')",
+                  r"^_bundle_sha256='[0-9a-f]{64}'$",
+                  f"_bundle_sha256='{new_checksum}'",
               ),
           )
           for pattern, replacement in replacements:
@@ -163,6 +252,7 @@ jobs:
 
       - name: Build and validate package
         env:
+          BUNDLE_PATH: ${{ steps.bundle.outputs.path }}
           VERSION: ${{ steps.upstream.outputs.version }}
         run: |
           set -euo pipefail
@@ -170,7 +260,30 @@ jobs:
           build_dir="$RUNNER_TEMP/package-build"
           rm -rf "$build_dir"
           mkdir -p "$build_dir"
-          cp PKGBUILD "$PACKAGE_NAME-$VERSION.tgz" "$build_dir/"
+          cp PKGBUILD "$BUNDLE_PATH" "$build_dir/"
+
+          docker run --rm \
+            --network none \
+            --env BUILD_UID="$(id -u)" \
+            --volume "$build_dir:/pkg" \
+            --workdir /pkg \
+            archlinux:base-devel \
+            bash -euc '
+              useradd --uid "$BUILD_UID" --create-home builder
+              chown -R builder:builder /pkg
+              runuser -u builder -- makepkg --verifysource --force --noconfirm
+              runuser -u builder -- makepkg --force --nodeps --noconfirm
+
+              package_root="pkg/ompweb"
+              test -L "$package_root/usr/bin/ompweb"
+              test "$(readlink "$package_root/usr/bin/ompweb")" = \
+                "../lib/node_modules/@kahme247/ompweb/bin/omp-web.js"
+              test -f "$package_root/usr/share/licenses/ompweb/LICENSE"
+              test -f \
+                "$package_root/usr/lib/node_modules/@kahme247/ompweb/package-lock.json"
+              test -d \
+                "$package_root/usr/lib/node_modules/@kahme247/ompweb/.next"
+            '
 
           docker run --rm \
             --env BUILD_UID="$(id -u)" \
@@ -181,19 +294,11 @@ jobs:
             bash -euc '
               useradd --uid "$BUILD_UID" --create-home builder
               chown -R builder:builder /pkg
-              pacman -Syu --needed --noconfirm nodejs npm
-              runuser -u builder -- makepkg --verifysource --force --noconfirm
-              runuser -u builder -- makepkg --force --nodeps --noconfirm
+              pacman -Syu --needed --noconfirm nodejs
 
               package_root="pkg/ompweb"
-              test -L "$package_root/usr/bin/ompweb"
-              test "$(readlink "$package_root/usr/bin/ompweb")" = \
-                "../lib/node_modules/@kahme247/ompweb/bin/omp-web.js"
-              test -f "$package_root/usr/share/licenses/ompweb/LICENSE"
-              test -d \
-                "$package_root/usr/lib/node_modules/@kahme247/ompweb/.next"
               node -e "
-                const manifest = require(process.argv[1]);
+                const manifest = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\"));
                 if (manifest.version !== process.argv[2]) process.exit(1);
               " \
                 "$package_root/usr/lib/node_modules/@kahme247/ompweb/package.json" \
@@ -223,6 +328,58 @@ jobs:
                 exit 1
               fi
             '
+
+      - name: Publish locked runtime bundle
+        env:
+          ASSET_NAME: ${{ steps.bundle.outputs.name }}
+          ASSET_PATH: ${{ steps.bundle.outputs.path }}
+          BUNDLE_SHA256: ${{ steps.bundle.outputs.sha256 }}
+          BUNDLE_TAG: ${{ steps.bundle.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          LOCKFILE_SHA256: ${{ steps.upstream.outputs.lockfile_sha256 }}
+          NPM_SHA256: ${{ steps.upstream.outputs.npm_sha256 }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          printf -v notes \
+            'Locked Linux x86_64 runtime bundle for %s at %s.\n\nnpm archive SHA-256: %s\npackage-lock.json SHA-256: %s\nbundle SHA-256: %s\n' \
+            "$UPSTREAM_REPOSITORY" \
+            "$UPSTREAM_TAG" \
+            "$NPM_SHA256" \
+            "$LOCKFILE_SHA256" \
+            "$BUNDLE_SHA256"
+
+          if gh release view "$BUNDLE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$BUNDLE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "ompweb $VERSION locked runtime bundle" \
+              --notes "$notes"
+
+            existing_dir="$RUNNER_TEMP/existing-bundle"
+            rm -rf "$existing_dir"
+            mkdir -p "$existing_dir"
+            if gh release download "$BUNDLE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$ASSET_NAME" \
+              --dir "$existing_dir"; then
+              if ! cmp --silent "$ASSET_PATH" "$existing_dir/$ASSET_NAME"; then
+                echo 'Immutable release bundle does not match its checksum tag.' >&2
+                exit 1
+              fi
+              echo 'Existing release bundle is unchanged.'
+              exit 0
+            fi
+
+            gh release upload "$BUNDLE_TAG" "$ASSET_PATH" \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$BUNDLE_TAG" "$ASSET_PATH" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "ompweb $VERSION locked runtime bundle" \
+              --notes "$notes"
+          fi
 
       - name: Detect recipe changes
         id: changes

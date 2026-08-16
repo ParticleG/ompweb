@@ -8,21 +8,23 @@ arch=('x86_64')
 url='https://github.com/kahme247/ompweb'
 license=('MIT')
 depends=('nodejs>=22.19.0' 'oh-my-pi')
-makedepends=('npm')
 options=('!strip' '!debug')
 
-source=("$pkgname-$pkgver.tgz::https://registry.npmjs.org/@kahme247/ompweb/-/ompweb-$pkgver.tgz")
-sha256sums=('f67577370e99605a84b793f8b9d3d7e3a1f83c155a857e1b99928ab6a311d965')
+_bundle_sha256='548c2ed86467540d15729d267d34e51aa1c320a93cc3d7ef46211215224d8e51'
+_bundle="$pkgname-$pkgver-x86_64.tar.gz"
+source=("$_bundle::https://github.com/ParticleG/ompweb/releases/download/bundle-v$pkgver-$_bundle_sha256/$_bundle")
+sha256sums=("$_bundle_sha256")
 
 package() {
-  npm install --global \
-    --prefix "$pkgdir/usr" \
-    --cache "$srcdir/npm-cache" \
-    --omit=dev \
-    --ignore-scripts \
-    "$srcdir/$pkgname-$pkgver.tgz"
+  install -d "$pkgdir/usr/lib/node_modules/@kahme247"
+  cp -a "$srcdir/ompweb" \
+    "$pkgdir/usr/lib/node_modules/@kahme247/ompweb"
+
+  install -d "$pkgdir/usr/bin"
+  ln -s "../lib/node_modules/@kahme247/ompweb/bin/omp-web.js" \
+    "$pkgdir/usr/bin/ompweb"
 
   install -Dm644 \
-    "$pkgdir/usr/lib/node_modules/@kahme247/ompweb/LICENSE" \
+    "$srcdir/ompweb/LICENSE" \
     "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
