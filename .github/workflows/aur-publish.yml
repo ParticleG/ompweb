@@ -410,13 +410,71 @@ jobs:
           github.event_name == 'schedule' ||
           github.event_name == 'repository_dispatch' ||
           github.event.inputs.force_publish == 'true'
-        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
-        with:
-          pkgname: ompweb
-          pkgbuild: ./PKGBUILD
-          assets: |
-            .gitignore
-          commit_username: ParticleG
-          commit_email: particle_g@outlook.com
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: "Update to ${{ steps.upstream.outputs.version }}"
+        env:
+          AUR_REPOSITORY_URL: ssh://aur@aur.archlinux.org/ompweb.git
+          AUR_SSH_ED25519_FINGERPRINT: SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4
+          AUR_SSH_ED25519_KEY: AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN
+          AUR_SSH_HOST: aur.archlinux.org
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$AUR_REPOSITORY_URL" == ssh://aur@aur.archlinux.org/* ]]; then
+            if [[ -z "${AUR_SSH_PRIVATE_KEY:-}" ]]; then
+              echo 'AUR_SSH_PRIVATE_KEY is required.' >&2
+              exit 1
+            fi
+
+            ssh_dir="$RUNNER_TEMP/aur-ssh"
+            key_file="$ssh_dir/id_ed25519"
+            known_hosts="$ssh_dir/known_hosts"
+            install -d -m 700 "$ssh_dir"
+            printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >"$key_file"
+            chmod 600 "$key_file"
+            trap 'rm -f "$key_file"' EXIT
+
+            printf '%s ssh-ed25519 %s\n' \
+              "$AUR_SSH_HOST" "$AUR_SSH_ED25519_KEY" >"$known_hosts"
+            actual_fingerprint="$(
+              ssh-keygen -E sha256 -lf "$known_hosts" \
+                | cut -d ' ' -f 2 \
+                | sort -u
+            )"
+            if [[ "$actual_fingerprint" != "$AUR_SSH_ED25519_FINGERPRINT" ]]; then
+              printf 'Unexpected AUR SSH fingerprint: %s\n' \
+                "$actual_fingerprint" >&2
+              exit 1
+            fi
+
+            export GIT_SSH_COMMAND="ssh -i $key_file -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts"
+          fi
+
+          aur_dir="$RUNNER_TEMP/aur-repository"
+          rm -rf "$aur_dir"
+          if ! git clone "$AUR_REPOSITORY_URL" "$aur_dir"; then
+            echo 'AUR clone failed; bootstrapping an empty local repository.'
+            rm -rf "$aur_dir"
+            git init --initial-branch=master "$aur_dir"
+            git -C "$aur_dir" remote add origin "$AUR_REPOSITORY_URL"
+          fi
+
+          if git -C "$aur_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+            git -C "$aur_dir" checkout -B master
+          else
+            git -C "$aur_dir" symbolic-ref HEAD refs/heads/master
+          fi
+
+          git -C "$aur_dir" rm -r --ignore-unmatch -- .
+          cp PKGBUILD .SRCINFO .gitignore "$aur_dir/"
+          git -C "$aur_dir" add PKGBUILD .SRCINFO .gitignore
+
+          if git -C "$aur_dir" diff --cached --quiet; then
+            echo 'AUR package repository is already up to date.'
+            exit 0
+          fi
+
+          git -C "$aur_dir" config user.name 'ParticleG'
+          git -C "$aur_dir" config user.email 'particle_g@outlook.com'
+          git -C "$aur_dir" commit -m "Update to $VERSION"
+          git -C "$aur_dir" push origin HEAD:master
