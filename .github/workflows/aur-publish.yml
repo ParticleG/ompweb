@@ -9,6 +9,7 @@ on:
       - .gitignore
       - .SRCINFO
       - PKGBUILD
+      - README.md
   schedule:
     - cron: '41 */6 * * *'
   repository_dispatch:
@@ -466,8 +467,8 @@ jobs:
           fi
 
           git -C "$aur_dir" rm -r --ignore-unmatch -- .
-          cp PKGBUILD .SRCINFO .gitignore "$aur_dir/"
-          git -C "$aur_dir" add PKGBUILD .SRCINFO .gitignore
+          cp PKGBUILD .SRCINFO .gitignore README.md "$aur_dir/"
+          git -C "$aur_dir" add PKGBUILD .SRCINFO .gitignore README.md
 
           if git -C "$aur_dir" diff --cached --quiet; then
             echo 'AUR package repository is already up to date.'
