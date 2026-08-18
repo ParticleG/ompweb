@@ -10,6 +10,8 @@ on:
       - .SRCINFO
       - PKGBUILD
       - README.md
+      - ompweb.install
+      - ompweb@.service
   schedule:
     - cron: '41 */6 * * *'
   repository_dispatch:
@@ -261,7 +263,7 @@ jobs:
           build_dir="$RUNNER_TEMP/package-build"
           rm -rf "$build_dir"
           mkdir -p "$build_dir"
-          cp PKGBUILD "$BUNDLE_PATH" "$build_dir/"
+          cp PKGBUILD ompweb.install ompweb@.service "$BUNDLE_PATH" "$build_dir/"
 
           docker run --rm \
             --network none \
@@ -284,6 +286,9 @@ jobs:
                 "$package_root/usr/lib/node_modules/@kahme247/ompweb/package-lock.json"
               test -d \
                 "$package_root/usr/lib/node_modules/@kahme247/ompweb/.next"
+              test -f \
+                "$package_root/usr/lib/systemd/system/ompweb@.service"
+              bash -n ompweb.install
             '
 
           docker run --rm \
@@ -298,6 +303,11 @@ jobs:
               pacman -Syu --needed --noconfirm nodejs
 
               package_root="pkg/ompweb"
+              ln -s "$PWD/$package_root/usr/bin/ompweb" /usr/bin/ompweb
+              SYSTEMD_UNIT_PATH="$PWD/$package_root/usr/lib/systemd/system:/etc/systemd/system:/run/systemd/system:/usr/local/lib/systemd/system:/usr/lib/systemd/system" \
+                systemd-analyze verify "ompweb@builder.service"
+              rm /usr/bin/ompweb
+
               node -e "
                 const manifest = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\"));
                 if (manifest.version !== process.argv[2]) process.exit(1);
@@ -467,8 +477,21 @@ jobs:
           fi
 
           git -C "$aur_dir" rm -r --ignore-unmatch -- .
-          cp PKGBUILD .SRCINFO .gitignore README.md "$aur_dir/"
-          git -C "$aur_dir" add PKGBUILD .SRCINFO .gitignore README.md
+          cp \
+            PKGBUILD \
+            .SRCINFO \
+            .gitignore \
+            README.md \
+            ompweb.install \
+            ompweb@.service \
+            "$aur_dir/"
+          git -C "$aur_dir" add \
+            PKGBUILD \
+            .SRCINFO \
+            .gitignore \
+            README.md \
+            ompweb.install \
+            ompweb@.service
 
           if git -C "$aur_dir" diff --cached --quiet; then
             echo 'AUR package repository is already up to date.'
