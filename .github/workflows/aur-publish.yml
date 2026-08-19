@@ -241,7 +241,7 @@ jobs:
           srcinfo_dir="$RUNNER_TEMP/package-srcinfo"
           rm -rf "$srcinfo_dir"
           mkdir -p "$srcinfo_dir"
-          cp PKGBUILD "$srcinfo_dir/"
+          cp PKGBUILD ompweb.install ompweb@.service "$srcinfo_dir/"
 
           docker run --rm \
             --env BUILD_UID="$(id -u)" \
