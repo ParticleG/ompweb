@@ -289,6 +289,12 @@ jobs:
               test -f \
                 "$package_root/usr/lib/systemd/system/ompweb@.service"
               bash -n ompweb.install
+              install_notice="$(bash -c "source ./ompweb.install; post_install 0.0.0-1")"
+              upgrade_notice="$(bash -c "source ./ompweb.install; post_upgrade 0.0.0-2 0.0.0-1")"
+              grep --fixed-strings --quiet \
+                "sudo systemctl enable --now ompweb@YOUR_USERNAME.service" \
+                <<<"$install_notice"
+              test "$upgrade_notice" = "$install_notice"
             '
 
           docker run --rm \
