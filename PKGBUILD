@@ -1,8 +1,8 @@
 # Maintainer: ParticleG <particle_g@outlook.com>
 
 pkgname=ompweb
-pkgver=0.3.2
-pkgrel=2
+pkgver=0.3.3
+pkgrel=1
 pkgdesc='Web UI for the oh-my-pi coding agent'
 arch=('x86_64')
 url='https://github.com/kahme247/ompweb'
@@ -11,7 +11,7 @@ depends=('nodejs>=22.19.0' 'oh-my-pi')
 options=('!strip' '!debug')
 install=ompweb.install
 
-_bundle_sha256='6924fe309e3735c8bd498d55313c5b0db1a6f1c33e74772ac7049794b2a99de6'
+_bundle_sha256='7794807116cb37d49c9e6cbc9e802b7e7b593245460c3126b8dfabb75cedce7b'
 _bundle="$pkgname-$pkgver-x86_64.tar.gz"
 source=(
   "$_bundle::https://github.com/ParticleG/ompweb/releases/download/bundle-v$pkgver-$_bundle_sha256/$_bundle"
