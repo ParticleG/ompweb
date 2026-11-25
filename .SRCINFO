@@ -6,7 +6,7 @@ pkgbase = ompweb
 	install = ompweb.install
 	arch = x86_64
 	license = MIT
-	depends = nodejs>=22.19.0
+	depends = nodejs>=24.0.0
 	depends = oh-my-pi
 	options = !strip
 	options = !debug

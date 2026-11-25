@@ -284,8 +284,8 @@ jobs:
               test -f "$package_root/usr/share/licenses/ompweb/LICENSE"
               test -f \
                 "$package_root/usr/lib/node_modules/@kahme247/ompweb/package-lock.json"
-              test -d \
-                "$package_root/usr/lib/node_modules/@kahme247/ompweb/.next"
+              test -f \
+                "$package_root/usr/lib/node_modules/@kahme247/ompweb/dist/index.html"
               test -f \
                 "$package_root/usr/lib/systemd/system/ompweb@.service"
               bash -n ompweb.install

@@ -82,7 +82,7 @@ The installed application entry point is `bin/omp-web.js` inside the external ru
 
 ## Runtime/Tooling Preferences
 
-- Runtime: Node.js `>=22.19.0` plus the `oh-my-pi` package.
+- Runtime: Node.js `>=24.0.0` plus the `oh-my-pi` package.
 - Supported package target: Linux x86_64 with glibc.
 - Arch packaging tool: `makepkg`; CI uses `archlinux:base-devel` containers.
 - JavaScript package manager: npm, used only by release automation with the upstream `package-lock.json`. Do not substitute Bun, pnpm, or Yarn.
@@ -96,7 +96,7 @@ No unit, integration, or end-to-end test suite, test framework, coverage tool, `
 - verify upstream npm integrity and manifest version;
 - build the normalized bundle twice and compare bytes;
 - run `makepkg --verifysource` and build with networking disabled;
-- assert the executable symlink, license, lockfile, and `.next` output exist;
+- assert the executable symlink, license, lockfile, and `dist` output exist;
 - start the staged `/usr/bin/ompweb` with `--no-open --port 30177`;
 - poll `http://127.0.0.1:30177/` and require `<title>omp web</title>`.
 

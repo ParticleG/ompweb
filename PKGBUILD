@@ -7,7 +7,7 @@ pkgdesc='Web UI for the oh-my-pi coding agent'
 arch=('x86_64')
 url='https://github.com/kahme247/ompweb'
 license=('MIT')
-depends=('nodejs>=22.19.0' 'oh-my-pi')
+depends=('nodejs>=24.0.0' 'oh-my-pi')
 options=('!strip' '!debug')
 install=ompweb.install
 
